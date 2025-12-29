@@ -5,25 +5,35 @@ const MapPage = () => {
   const mapRef = useRef(null)
   const mapInstance = useRef(null)
   const inputRef = useRef(null)
-  const markerRef = useRef(null)
+  const userMarkerRef = useRef(null)
+  const destMarkerRef = useRef(null)
+  const directionsRendererRef = useRef(null)
 
-  const [destination, setDestination] = useState(null)
+  const [userLocation, setUserLocation] = useState(null)
+  const [routeInfo, setRouteInfo] = useState(null)
+
   const navigate = useNavigate()
 
+  // INIT MAP + USER LOCATION
   useEffect(() => {
     if (!window.google || mapInstance.current) return
 
     navigator.geolocation.getCurrentPosition(
-      (position) => {
-        const { latitude, longitude } = position.coords
+      (pos) => {
+        const loc = {
+          lat: pos.coords.latitude,
+          lng: pos.coords.longitude,
+        }
+
+        setUserLocation(loc)
 
         mapInstance.current = new window.google.maps.Map(mapRef.current, {
-          center: { lat: latitude, lng: longitude },
+          center: loc,
           zoom: 15,
         })
 
-        new window.google.maps.Marker({
-          position: { lat: latitude, lng: longitude },
+        userMarkerRef.current = new window.google.maps.Marker({
+          position: loc,
           map: mapInstance.current,
           title: "You are here",
         })
@@ -31,67 +41,117 @@ const MapPage = () => {
         setupAutocomplete()
       },
       () => {
+        const fallback = { lat: 28.6139, lng: 77.209 }
+        setUserLocation(fallback)
+
         mapInstance.current = new window.google.maps.Map(mapRef.current, {
-          center: { lat: 28.6139, lng: 77.209 },
+          center: fallback,
           zoom: 13,
         })
+
         setupAutocomplete()
       }
     )
   }, [])
 
+  // AUTOCOMPLETE SETUP
   const setupAutocomplete = () => {
-    if (!window.google || !inputRef.current) return
-
     const autocomplete = new window.google.maps.places.Autocomplete(
       inputRef.current,
-      {
-        fields: ["geometry", "name"],
-      }
+      { fields: ["geometry", "name"] }
     )
 
     autocomplete.addListener("place_changed", () => {
       const place = autocomplete.getPlace()
       if (!place.geometry) return
 
-      const location = place.geometry.location
-      const lat = location.lat()
-      const lng = location.lng()
-
-      setDestination({ lat, lng, name: place.name })
-
-      mapInstance.current.panTo({ lat, lng })
-      mapInstance.current.setZoom(15)
-
-      if (markerRef.current) {
-        markerRef.current.setMap(null)
+      const destination = {
+        lat: place.geometry.location.lat(),
+        lng: place.geometry.location.lng(),
       }
 
-      markerRef.current = new window.google.maps.Marker({
-        position: { lat, lng },
+      drawRoute(destination)
+
+      if (destMarkerRef.current) {
+        destMarkerRef.current.setMap(null)
+      }
+
+      destMarkerRef.current = new window.google.maps.Marker({
+        position: destination,
         map: mapInstance.current,
         title: place.name,
       })
     })
   }
 
+  // DRAW ROUTE
+  const drawRoute = (destination) => {
+    if (!userLocation) return
+
+    const directionsService = new window.google.maps.DirectionsService()
+
+    if (directionsRendererRef.current) {
+      directionsRendererRef.current.setMap(null)
+    }
+
+    directionsRendererRef.current = new window.google.maps.DirectionsRenderer({
+      suppressMarkers: true,
+      polylineOptions: {
+        strokeColor: "#2563EB",
+        strokeWeight: 5,
+      },
+    })
+
+    directionsRendererRef.current.setMap(mapInstance.current)
+
+    directionsService.route(
+      {
+        origin: userLocation,
+        destination,
+        travelMode: window.google.maps.TravelMode.WALKING,
+      },
+      (result, status) => {
+        if (status === "OK") {
+          directionsRendererRef.current.setDirections(result)
+
+          const leg = result.routes[0].legs[0]
+          setRouteInfo({
+            distance: leg.distance.text,
+            duration: leg.duration.text,
+          })
+        }
+      }
+    )
+  }
+
   return (
     <div className="relative h-screen w-screen">
-      
+
       {/* Search Bar */}
       <div className="absolute top-4 left-1/2 -translate-x-1/2 z-10 w-[90%] max-w-md bg-white rounded-lg shadow p-2">
         <input
           ref={inputRef}
-          type="text"
           placeholder="Enter destination"
           className="w-full border px-3 py-2 rounded-md focus:outline-none"
         />
       </div>
 
+      {/* Route Info */}
+      {routeInfo && (
+        <div className="absolute bottom-20 left-1/2 -translate-x-1/2 z-10 bg-white px-4 py-2 rounded-lg shadow">
+          <p className="text-sm font-medium">
+            Distance: {routeInfo.distance}
+          </p>
+          <p className="text-sm text-gray-600">
+            Time: {routeInfo.duration}
+          </p>
+        </div>
+      )}
+
       {/* Map */}
       <div ref={mapRef} className="h-screen w-full" />
 
-      {/* Back Button */}
+      {/* Back */}
       <button
         onClick={() => navigate("/dashboard")}
         className="absolute bottom-4 left-4 z-10 bg-white px-4 py-2 rounded shadow"
