@@ -1,21 +1,10 @@
 @import "tailwindcss";
-* {
+
+html,
+body,
+#root {
+  height: 100%;
   margin: 0;
   padding: 0;
-  box-sizing: border-box;
-}
-
-body, html, #root {
-  height: 100%;
-  width: 100%;
-  overflow-x: hidden; /* Prevents horizontal scrolling */
-}
-/* This ensures the Google address suggestions are visible above your modal */
-.pac-container {
-    z-index: 9999 !important;
-    border-radius: 12px;
-    margin-top: 5px;
-    box-shadow: 0 4px 12px rgba(0,0,0,0.15);
-    border: none;
-    font-family: 'Inter', sans-serif;
+  overflow: hidden; /* Prevents unwanted scrolling on the map page */
 }

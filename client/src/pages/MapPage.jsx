@@ -1,167 +1,223 @@
-import React, { useState, useCallback } from 'react';
-import { 
-  GoogleMap, 
-  useJsApiLoader, 
-  DirectionsService, 
-  DirectionsRenderer, 
-  Marker, 
-  Autocomplete,
-  Polyline 
-} from '@react-google-maps/api';
-import { useLocation, useNavigate } from 'react-router-dom';
-import { useLocationTracking } from '../hooks/useLocationTracking';
-
-const containerStyle = { width: '100vw', height: '100vh' };
-const libraries = ['places'];
+import { useEffect, useRef, useState } from "react"
+import { useNavigate } from "react-router-dom"
 
 const MapPage = () => {
-  const location = useLocation();
-  const navigate = useNavigate();
-  const [response, setResponse] = useState(null);
-  const [autocomplete, setAutocomplete] = useState(null);
-  
-  const queryParams = new URLSearchParams(location.search);
-  const [currentDestination, setCurrentDestination] = useState(queryParams.get('destination'));
-  const [destCoords, setDestCoords] = useState(null);
+  const mapRef = useRef(null)
+  const mapInstance = useRef(null)
+  const autocompleteInputRef = useRef(null)
+  const userMarkerRef = useRef(null)
+  const destMarkerRef = useRef(null)
+  const directionsRendererRef = useRef(null)
+  const watchIdRef = useRef(null)
 
-  // FEATURE 2: Live GPS Tracking Hook
-  const { location: userLocation } = useLocationTracking();
-  const startLat = parseFloat(queryParams.get('startLat'));
-  const startLng = parseFloat(queryParams.get('startLng'));
-  
-  // Dynamic Origin: Prefers real-time GPS, falls back to URL data
-  const origin = userLocation || { lat: startLat || 22.7196, lng: startLng || 75.8577 };
+  const [userLocation, setUserLocation] = useState(null)
+  const [routeInfo, setRouteInfo] = useState(null)
+  const [isNavigating, setIsNavigating] = useState(false)
+  const [mapMoving, setMapMoving] = useState(false)
 
-  const { isLoaded } = useJsApiLoader({
-    id: 'google-map-script',
-    googleMapsApiKey: "", 
-    libraries: libraries
-  });
+  const navigate = useNavigate()
 
-  // FEATURE 3: Search Logic
-  const onPlaceChanged = () => {
-    if (autocomplete !== null) {
-      const place = autocomplete.getPlace();
-      if (place.geometry) {
-        setResponse(null); // Reset for new route calculation
-        setCurrentDestination(place.formatted_address || place.name);
-        setDestCoords({
-          lat: place.geometry.location.lat(),
-          lng: place.geometry.location.lng()
-        });
+  /* ---------------- INIT MAP ---------------- */
+  useEffect(() => {
+    const startLoad = async () => {
+      if (window.google) {
+        try {
+          await window.google.maps.importLibrary("maps")
+          await window.google.maps.importLibrary("marker")
+
+          navigator.geolocation.getCurrentPosition(
+            (pos) => {
+              const loc = { lat: pos.coords.latitude, lng: pos.coords.longitude }
+              initMap(loc)
+            },
+            () => {
+              initMap({ lat: 28.6139, lng: 77.209 }) // Delhi fallback
+            }
+          )
+        } catch (error) {
+          console.error("Maps load error:", error)
+        }
       }
     }
-  };
-
-  const handleKeyDown = (e) => {
-    if (e.key === 'Enter') {
-      e.preventDefault();
-      setTimeout(() => onPlaceChanged(), 100);
+    startLoad()
+    return () => {
+      if (watchIdRef.current) navigator.geolocation.clearWatch(watchIdRef.current)
     }
-  };
+  }, [])
 
-  // FEATURE 4: Directions Callback
-  const directionsCallback = useCallback((res) => {
-    if (res !== null && res.status === 'OK') {
-      setResponse(res);
-    } else {
-      console.warn("Directions API failed or denied. Fallback to manual line.");
+  const initMap = async (loc) => {
+    setUserLocation(loc)
+    const { Map } = await window.google.maps.importLibrary("maps")
+    const { AdvancedMarkerElement } = await window.google.maps.importLibrary("marker")
+
+    mapInstance.current = new Map(mapRef.current, {
+      center: loc,
+      zoom: 17,
+      mapId: "3b8335eb9c9526963a629baf",
+      disableDefaultUI: true,
+      zoomControl: false,
+    })
+
+    userMarkerRef.current = new AdvancedMarkerElement({
+      map: mapInstance.current,
+      position: loc,
+      title: "You",
+    })
+
+    mapInstance.current.addListener("dragstart", () => setMapMoving(true))
+
+    // Setup the Legacy Autocomplete with required fields
+    // Inside initMap...
+    if (window.google.maps.places) {
+      const autocomplete = new window.google.maps.places.Autocomplete(autocompleteInputRef.current, {
+        // requesting 'geometry' is what provides the lat/lng coordinates
+        fields: ["geometry", "name", "formatted_address"],
+        types: ["establishment", "geocode"],
+      });
+
+      autocomplete.addListener("place_changed", () => {
+        const place = autocomplete.getPlace();
+
+        // If billing is not fixed, geometry will often be undefined
+        if (!place.geometry || !place.geometry.location) {
+          alert("Search failed. Please ensure Billing is enabled in Google Console.");
+          return;
+        }
+
+        const destination = {
+          lat: place.geometry.location.lat(),
+          lng: place.geometry.location.lng(),
+        };
+
+        // This triggers the blue route line
+        drawRoute(destination);
+      });
     }
-  }, []);
+  }
 
-  if (!isLoaded) return <div style={styles.loading}>Initializing Maps...</div>;
+  /* ---------------- DRAW ROUTE ---------------- */
+  const drawRoute = (destination) => {
+    const directionsService = new window.google.maps.DirectionsService()
+    if (directionsRendererRef.current) directionsRendererRef.current.setMap(null)
+
+    directionsRendererRef.current = new window.google.maps.DirectionsRenderer({
+      suppressMarkers: true,
+      polylineOptions: { strokeColor: "#2563EB", strokeWeight: 8 }
+    })
+    directionsRendererRef.current.setMap(mapInstance.current)
+
+    directionsService.route({
+      origin: userLocation,
+      destination,
+      travelMode: window.google.maps.TravelMode.WALKING,
+    }, (result, status) => {
+      if (status === "OK") {
+        directionsRendererRef.current.setDirections(result)
+        const leg = result.routes[0].legs[0]
+        setRouteInfo({
+          distance: leg.distance.text,
+          duration: leg.duration.text,
+          steps: leg.steps
+        })
+
+        const bounds = new window.google.maps.LatLngBounds()
+        bounds.extend(userLocation)
+        bounds.extend(destination)
+        mapInstance.current.fitBounds(bounds)
+      }
+    })
+  }
+
+  /* ---------------- NAVIGATION ---------------- */
+  const startNavigation = () => {
+    setIsNavigating(true)
+    setMapMoving(false)
+    watchIdRef.current = navigator.geolocation.watchPosition((pos) => {
+      const updatedLoc = { lat: pos.coords.latitude, lng: pos.coords.longitude }
+      setUserLocation(updatedLoc)
+      userMarkerRef.current.position = updatedLoc
+      if (!mapMoving) {
+        mapInstance.current.panTo(updatedLoc)
+        mapInstance.current.setZoom(19)
+      }
+    }, (err) => console.error(err), { enableHighAccuracy: true })
+  }
 
   return (
-    <div style={{ position: 'relative' }}>
-      {/* UI Overlays */}
-      <button onClick={() => navigate(-1)} style={styles.backBtn}>⬅ Back</button>
+    <div className="relative h-screen w-screen overflow-hidden bg-gray-100">
+      {/* Map Background */}
+      <div ref={mapRef} className="absolute inset-0 z-0" />
 
-      <div style={styles.searchContainer}>
-        <Autocomplete onLoad={setAutocomplete} onPlaceChanged={onPlaceChanged}>
-          <input 
-            type="text" 
-            placeholder="Search destination..." 
-            style={styles.searchInput} 
-            onKeyDown={handleKeyDown}
+      {/* Floating Search Bar */}
+      <div className="absolute top-6 left-1/2 -translate-x-1/2 z-20 w-[90%] max-w-md">
+        <div className="bg-white/95 backdrop-blur-md rounded-2xl shadow-2xl p-4 border border-gray-100">
+          <input
+            ref={autocompleteInputRef}
+            type="text"
+            placeholder="Search destination..."
+            className="w-full bg-transparent border-none outline-none text-gray-800 font-semibold placeholder:text-gray-400"
           />
-        </Autocomplete>
+        </div>
       </div>
 
-      <GoogleMap
-        mapContainerStyle={containerStyle}
-        center={origin}
-        zoom={15}
-        options={{ disableDefaultUI: true, zoomControl: true }}
-      >
-        {/* User Marker */}
-        <Marker 
-          position={origin} 
-          icon={{
-            path: window.google.maps.SymbolPath.CIRCLE,
-            scale: 8,
-            fillColor: "#4285F4",
-            fillOpacity: 1,
-            strokeWeight: 2,
-            strokeColor: "white",
-          }}
-        />
+      {/* Recenter Button */}
+      {mapMoving && (
+        <button
+          onClick={() => { mapInstance.current.panTo(userLocation); setMapMoving(false); }}
+          className="absolute top-24 right-6 z-20 bg-blue-600 text-white px-5 py-2 rounded-full shadow-lg font-bold text-sm"
+        >
+          Recenter 🎯
+        </button>
+      )}
 
-        {/* FEATURE 4: Directions Logic */}
-        {currentDestination && !response && (
-          <DirectionsService
-            options={{
-              origin: origin,
-              destination: currentDestination,
-              travelMode: 'WALKING'
-            }}
-            callback={directionsCallback}
-          />
-        )}
-
-        {/* Real Blue Line */}
-        {response && (
-          <DirectionsRenderer
-            directions={response}
-            options={{ polylineOptions: { strokeColor: "#4285F4", strokeWeight: 6 } }}
-          />
-        )}
-
-        {/* FALLBACK BLUE LINE: Shows if Directions API is blocked */}
-        {!response && destCoords && (
-          <>
-            <Polyline
-              path={[origin, destCoords]}
-              options={{ strokeColor: "#4285F4", strokeWeight: 6, strokeOpacity: 0.6, geodesic: true }}
-            />
-            <Marker position={destCoords} label="B" />
-          </>
-        )}
-      </GoogleMap>
-
-      {/* Info Card */}
-      {(response || destCoords) && (
-        <div style={styles.routeCard}>
-          <h4 style={{margin: '0 0 5px 0'}}>Navigation Active</h4>
-          <p style={{margin: '0 0 10px 0', fontSize: '13px', color: '#555'}}>{currentDestination}</p>
-          <div style={styles.statsRow}>
-             <span>📏 {response ? response.routes[0].legs[0].distance.text : "Direct Path"}</span>
-             <span style={{color: response ? '#1e8e3e' : '#f4b400'}}>
-               {response ? "● Accessible Route" : "● Fallback Mode"}
-             </span>
+      {/* Info Panel */}
+      {routeInfo && !isNavigating && (
+        <div className="absolute bottom-10 left-1/2 -translate-x-1/2 z-20 w-[90%] max-w-sm">
+          <div className="bg-white rounded-[2.5rem] shadow-2xl p-6 border border-gray-100">
+            <div className="flex justify-between items-end mb-6">
+              <div>
+                <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest mb-1">Route Info</p>
+                <h2 className="text-3xl font-black text-gray-900">{routeInfo.duration}</h2>
+              </div>
+              <p className="text-blue-600 font-black text-xl mb-1">{routeInfo.distance}</p>
+            </div>
+            <button
+              onClick={startNavigation}
+              className="w-full bg-blue-600 text-white font-black py-4 rounded-2xl shadow-lg transition-all active:scale-95"
+            >
+              START NAVIGATION
+            </button>
           </div>
         </div>
       )}
+
+      {/* Navigation HUD */}
+      {isNavigating && (
+        <div className="absolute bottom-10 left-1/2 -translate-x-1/2 z-20 w-[90%] max-w-md">
+          <div className="bg-gray-900 text-white rounded-[2rem] p-5 shadow-2xl flex items-center justify-between border border-gray-800">
+            <div className="flex items-center gap-4">
+              <div className="w-2.5 h-2.5 bg-green-500 rounded-full animate-pulse" />
+              <p className="font-bold text-sm tracking-wide uppercase">Navigating</p>
+            </div>
+            <button
+              onClick={() => setIsNavigating(false)}
+              className="bg-red-500 px-6 py-2 rounded-xl font-black text-[10px] uppercase"
+            >
+              Stop
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Back Button */}
+      <button
+        onClick={() => navigate("/dashboard")}
+        className="absolute top-6 left-6 z-30 bg-white/90 backdrop-blur-md p-3.5 rounded-2xl shadow-md border border-gray-200"
+      >
+        🏠
+      </button>
     </div>
-  );
-};
+  )
+}
 
-const styles = {
-  backBtn: { position: 'absolute', top: '20px', left: '20px', zIndex: 10, padding: '10px 15px', borderRadius: '12px', border: 'none', background: 'white', boxShadow: '0 2px 10px rgba(0,0,0,0.1)', cursor: 'pointer', fontWeight: 'bold' },
-  searchContainer: { position: 'absolute', top: '20px', left: '50%', transform: 'translateX(-50%)', zIndex: 10, width: '70%', maxWidth: '400px' },
-  searchInput: { width: '100%', padding: '15px 20px', borderRadius: '30px', border: 'none', boxShadow: '0 4px 15px rgba(0,0,0,0.2)', fontSize: '16px', outline: 'none' },
-  routeCard: { position: 'absolute', bottom: '30px', left: '50%', transform: 'translateX(-50%)', width: '90%', maxWidth: '350px', background: 'white', padding: '20px', borderRadius: '20px', zIndex: 10, boxShadow: '0 4px 25px rgba(0,0,0,0.3)' },
-  statsRow: { display: 'flex', justifyContent: 'space-between', fontWeight: 'bold', fontSize: '14px' },
-  loading: { display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100vh', fontSize: '18px', fontWeight: 'bold', color: '#666' }
-};
-
-export default MapPage;
+export default MapPage
